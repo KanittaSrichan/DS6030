@@ -1,0 +1,190 @@
+---
+title: "KarthikaDisasterRelief"
+output: html_document
+date: "2024-02-22"
+--- 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE)
+knitr::opts_chunk$set(fig.align="center", fig.pos="tbh")
+```
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(GGally)
+library(kableExtra)
+library(tidyr)
+library(patchwork)
+library(kknn)
+library(yardstick)
+library(discrim)
+library(probably)
+library(doParallel)
+library(ggcorrplot)
+library(rsample)
+```
+
+```{r}
+library(doParallel)
+cl <- makePSOCKcluster(parallel::detectCores(logical = FALSE))
+registerDoParallel(cl)
+```
+
+
+## loading data into system
+
+```{r}
+#| cache:TRUE
+
+training<- read_csv('HaitiPixels.csv', show_col_types = FALSE)
+
+head(training)
+```
+
+## EDA 
+
+```{r}
+dim(training)
+```
+
+```{r}
+training %>%
+  summary()
+```
+Based on this data, we can assume that we have a class that describes the location, and then RGB values which descibe colors of the pixel, as each value works on a scale between 0-255. Therefore, each row represents one pixel. 
+
+
+```{r}
+sum(is.na(training))
+```
+
+There is no missing data in this set. 
+
+```{r}
+length(unique(training$Class))
+```
+
+There are 5 unique classes in this dataset. We will not look further for replicated data as it's very possible for multiple pixels to be of similar color. However, we should convert the class to a factor. 
+
+```{r}
+(unique(training$Class))
+
+```
+
+```{r}
+#| cache: TRUE
+haiti_training <- training %>%
+  mutate(Class=factor(Class))
+
+head(haiti_training)
+```
+
+
+```{r}
+g4 <- haiti_training %>%
+  ggplot(aes(x=Green, y=Red, color=Blue)) +
+  geom_point()+
+  facet_wrap("Class")
+
+g4
+```
+```{r}
+longer_data <- haiti_training %>%
+  pivot_longer(Red:Blue, names_to = "RGB", values_to = "value")
+
+head(longer_data)
+```
+
+
+```{r}
+#| cache: TRUE
+
+g5<- longer_data %>%
+  ggplot(aes(x=RGB, y=value)) +
+  geom_boxplot() +
+  facet_wrap(~Class, scales='free')
+
+g5
+
+```
+When we look at the box plot above, we can see that there is a clear difference in RGB values for each of the pixel classes. Vegetation has the clearest difference with the lowest values of any of them. Soil is rather high on Green and Red. Normal rooftops and Various Non-Tarps have less blue and more red compared to blue tarps.  
+
+We cannot look at the colors as columns for correlation as every row descibes one color. They would be correlated to each other. 
+
+
+## KNN Model 
+
+
+```{r}
+#|cache:True 
+
+set.seed(1353)
+
+folds <- vfold_cv(haiti_training, strata=Class)
+
+formula <- Class ~ Red + Green + Blue
+
+knn_wf <- workflow() %>% 
+  add_model(nearest_neighbor(neighbors=tune()) %>%
+            set_mode("classification") %>% 
+            set_engine("kknn")) %>% 
+  add_formula(formula)
+
+nn_default_tune <- tune_grid(knn_wf, resamples=folds)
+
+autoplot(nn_default_tune)
+
+```
+
+```{r}
+#|cache:TRUE
+parameters <- extract_parameter_set_dials(knn_wf) %>%
+    update(neighbors = neighbors(c(1, 100)))
+
+nn_bayes_tune <- tune_bayes(knn_wf, resamples=folds, param_info=parameters, iter=7)
+
+autoplot(nn_bayes_tune)
+
+```
+
+```{r}
+#|cache:True 
+optimal_nn_roc <- nn_bayes_tune %>% select_best(metric="roc_auc")
+
+optimal_nn_roc
+
+```
+```{r}
+optimal_nn_accuracy <- nn_bayes_tune %>% select_best(metric="accuracy")
+
+optimal_nn_accuracy
+```
+
+# Models for TEST data
+
+Realizing that we don't have test data. His website just says this is training data.. 
+
+```{r}
+knn32_model <- workflow() %>% 
+  add_model(nearest_neighbor(neighbors=32) %>%
+            set_mode("classification") %>% 
+            set_engine("kknn")) %>%
+  add_formula(formula)
+  
+  knn100_model <-   workflow() %>% 
+  add_model(nearest_neighbor(neighbors=100) %>%
+            set_mode("classification") %>% 
+            set_engine("kknn")) %>% 
+  add_formula(formula)
+
+```
+
+
+
+```{r}
+stopCluster(cl)
+registerDoSEQ()
+```
+
